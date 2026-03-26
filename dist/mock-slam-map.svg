@@ -1,0 +1,53 @@
+<svg width="1200" height="900" viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d9dde2"/>
+      <stop offset="100%" stop-color="#c8cdd3"/>
+    </linearGradient>
+    <filter id="noise">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="table" tableValues="0 0.06"/>
+      </feComponentTransfer>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="900" fill="url(#bg)"/>
+  <rect width="1200" height="900" fill="#000" filter="url(#noise)"/>
+
+  <g stroke="#b4bac2" stroke-width="2" opacity="0.45">
+    <path d="M80 120H1120"/>
+    <path d="M80 260H1120"/>
+    <path d="M80 400H1120"/>
+    <path d="M80 540H1120"/>
+    <path d="M80 680H1120"/>
+    <path d="M180 80V820"/>
+    <path d="M360 80V820"/>
+    <path d="M540 80V820"/>
+    <path d="M720 80V820"/>
+    <path d="M900 80V820"/>
+    <path d="M1080 80V820"/>
+  </g>
+
+  <g fill="#f5f7fa" stroke="#666d76" stroke-width="14" stroke-linejoin="round">
+    <path d="M90 90H1110V180H840V320H1110V810H90V640H360V500H90Z"/>
+    <path d="M480 210H720V360H480Z"/>
+    <path d="M520 560H780V760H520Z"/>
+    <path d="M180 260H320V460H180Z"/>
+    <path d="M880 500H1020V690H880Z"/>
+  </g>
+
+  <g fill="#8b949e" opacity="0.35">
+    <circle cx="240" cy="220" r="28"/>
+    <circle cx="958" cy="232" r="18"/>
+    <circle cx="827" cy="706" r="24"/>
+    <circle cx="424" cy="736" r="32"/>
+    <circle cx="618" cy="454" r="20"/>
+  </g>
+
+  <g fill="none" stroke="#7a828c" stroke-width="6" stroke-dasharray="16 12" opacity="0.55">
+    <path d="M120 720C220 700 280 680 400 700S620 760 740 700 980 650 1080 700"/>
+    <path d="M180 120C260 180 300 220 300 320S240 480 300 620"/>
+  </g>
+</svg>
