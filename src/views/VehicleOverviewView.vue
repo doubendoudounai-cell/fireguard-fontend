@@ -806,6 +806,10 @@ export default {
       })
       this.vehiclePositionsMap = nextMap
     },
+    extractRiskPointList (payload) {
+      if (Array.isArray(payload)) return payload
+      return Array.isArray(payload && payload.list) ? payload.list : []
+    },
     async fetchMapData (garageCode) {
       if (!garageCode) {
         this.currentMap = null
@@ -821,7 +825,7 @@ export default {
             mapId: this.currentMap.mapId,
             mapVersion: this.currentMap.mapVersion
           })
-          this.riskPoints = riskRes.data || []
+          this.riskPoints = this.extractRiskPointList(riskRes.data)
         } else {
           this.riskPoints = []
         }
