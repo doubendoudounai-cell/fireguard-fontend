@@ -107,6 +107,7 @@
             <el-table
               ref="riskTable"
               :data="riskPoints"
+              v-loading="riskLoading"
               stripe
               highlight-current-row
               style="width: 100%"
@@ -132,6 +133,19 @@
                 </template>
               </el-table-column>
             </el-table>
+          </div>
+          <div class="risk-pagination">
+            <el-pagination
+              small
+              background
+              :current-page="riskCurrentPage"
+              :page-size="riskPageSize"
+              :page-sizes="[10, 20, 50, 100]"
+              layout="total, sizes, prev, pager, next"
+              :total="riskTotal"
+              @current-change="handleRiskPageChange"
+              @size-change="handleRiskPageSizeChange"
+            />
           </div>
         </div>
       </div>
@@ -239,6 +253,11 @@ export default {
       mapVersions: [],
       selectedMap: null,
       riskPoints: [],
+      allRiskPoints: [],
+      riskLoading: false,
+      riskCurrentPage: 1,
+      riskPageSize: 10,
+      riskTotal: 0,
       selectedRiskPoint: null,
       showUploadDialog: false,
       uploadForm: createUploadForm(),
@@ -249,7 +268,7 @@ export default {
   },
   computed: {
     mappableRiskPoints () {
-      return this.riskPoints.filter(item => this.isRiskPointMappable(item))
+      return this.allRiskPoints.filter(item => this.isRiskPointMappable(item))
     }
   },
   mounted () {
@@ -272,15 +291,20 @@ export default {
         this.mapVersions = list
         this.selectedMap = this.resolveSelectedMap(list, currentMap, preferredKey)
         if (this.selectedMap) {
+          this.resetRiskPagination()
           await this.fetchRiskPoints(this.selectedMap.mapId, this.selectedMap.mapVersion)
         } else {
           this.riskPoints = []
+          this.allRiskPoints = []
+          this.riskTotal = 0
           this.selectedRiskPoint = null
         }
       } catch (error) {
         this.mapVersions = []
         this.selectedMap = null
         this.riskPoints = []
+        this.allRiskPoints = []
+        this.riskTotal = 0
         this.selectedRiskPoint = null
         this.$message.error(error || `车库 [${this.garageCode}] 地图数据获取失败`)
       } finally {
@@ -307,7 +331,12 @@ export default {
     selectMap (map) {
       this.selectedMap = map
       this.selectedRiskPoint = null
+      this.resetRiskPagination()
       this.fetchRiskPoints(map.mapId, map.mapVersion)
+    },
+    resetRiskPagination () {
+      this.riskCurrentPage = 1
+      this.riskPageSize = 10
     },
     formatOrigin (map) {
       if (!map) return '--'
@@ -348,22 +377,42 @@ export default {
     },
     selectRiskPoint (row) {
       if (!row) return
-      this.selectedRiskPoint = row
+      const pointCode = row.pointCode
+      this.selectedRiskPoint = this.allRiskPoints.find(item => item.pointCode === pointCode) || row
       this.$nextTick(() => {
         if (this.$refs.riskTable && this.$refs.riskTable.setCurrentRow) {
-          this.$refs.riskTable.setCurrentRow(row)
+          const currentPageRow = this.riskPoints.find(item => item.pointCode === pointCode) || null
+          this.$refs.riskTable.setCurrentRow(currentPageRow)
         }
       })
     },
     syncSelectedRiskPoint () {
       const currentCode = this.selectedRiskPoint && this.selectedRiskPoint.pointCode
-      const matched = currentCode ? (this.riskPoints.find(item => item.pointCode === currentCode) || null) : null
+      const matched = currentCode ? (this.allRiskPoints.find(item => item.pointCode === currentCode) || null) : null
       this.selectedRiskPoint = matched
       this.$nextTick(() => {
         if (this.$refs.riskTable && this.$refs.riskTable.setCurrentRow) {
-          this.$refs.riskTable.setCurrentRow(matched)
+          const currentPageRow = matched ? (this.riskPoints.find(item => item.pointCode === matched.pointCode) || null) : null
+          this.$refs.riskTable.setCurrentRow(currentPageRow)
         }
       })
+    },
+    normalizeRiskPointPageData (payload) {
+      if (Array.isArray(payload)) {
+        return {
+          list: payload,
+          total: payload.length,
+          page: 1,
+          size: payload.length
+        }
+      }
+      const list = Array.isArray(payload && payload.list) ? payload.list : []
+      return {
+        list,
+        total: Number((payload && payload.total) || list.length || 0),
+        page: Number((payload && payload.page) || this.riskCurrentPage || 1),
+        size: Number((payload && payload.size) || this.riskPageSize || list.length || 0)
+      }
     },
     openUploadDialog () {
       this.uploadForm = createUploadForm()
@@ -421,14 +470,51 @@ export default {
         }).catch(() => {})
     },
     async fetchRiskPoints (mapId, mapVersion) {
+      this.riskLoading = true
       try {
-        const res = await getRiskPoints(this.garageCode, { mapId, mapVersion })
-        this.riskPoints = res.data || []
+        const [pageRes, allRes] = await Promise.all([
+          getRiskPoints(this.garageCode, {
+            mapId,
+            mapVersion,
+            page: this.riskCurrentPage,
+            size: this.riskPageSize
+          }),
+          getRiskPoints(this.garageCode, { mapId, mapVersion })
+        ])
+        const pageData = this.normalizeRiskPointPageData(pageRes.data)
+        this.riskPoints = pageData.list
+        this.riskTotal = pageData.total
+        this.allRiskPoints = Array.isArray(allRes.data) ? allRes.data : this.normalizeRiskPointPageData(allRes.data).list
+
+        if (!this.riskPoints.length && this.riskCurrentPage > 1 && this.riskTotal >= 0) {
+          const maxPage = Math.max(1, Math.ceil(this.riskTotal / this.riskPageSize))
+          if (this.riskCurrentPage > maxPage) {
+            this.riskCurrentPage = maxPage
+            await this.fetchRiskPoints(mapId, mapVersion)
+            return
+          }
+        }
+
         this.syncSelectedRiskPoint()
       } catch (error) {
         this.riskPoints = []
+        this.allRiskPoints = []
+        this.riskTotal = 0
         this.selectedRiskPoint = null
+      } finally {
+        this.riskLoading = false
       }
+    },
+    handleRiskPageChange (page) {
+      if (page === this.riskCurrentPage || !this.selectedMap) return
+      this.riskCurrentPage = page
+      this.fetchRiskPoints(this.selectedMap.mapId, this.selectedMap.mapVersion)
+    },
+    handleRiskPageSizeChange (size) {
+      if (size === this.riskPageSize || !this.selectedMap) return
+      this.riskPageSize = size
+      this.riskCurrentPage = 1
+      this.fetchRiskPoints(this.selectedMap.mapId, this.selectedMap.mapVersion)
     },
     getRiskTypeName (type) {
       const map = { blind_spot: '视觉盲区', water_ponding: '积水区', clutter: '杂物区' }
@@ -530,6 +616,7 @@ export default {
 .meta-item strong { font-size: 13px; color: #334155; word-break: break-all; }
 .risk-card { min-height: 320px; }
 .table-container { flex: 1; padding: 0 10px 10px 10px; overflow: visible; }
+.risk-pagination { padding: 0 12px 12px; display: flex; justify-content: center; border-top: 1px solid #e2e8f0; background: #f5f9ff; }
 .type-tag { font-size: 12px; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
 .type-tag.blind_spot { background: #fee2e2; color: #ef4444; }
 .type-tag.water_ponding { background: #e0f2fe; color: #0ea5e9; }

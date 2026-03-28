@@ -14,7 +14,7 @@
     <div class="stat-row">
       <div class="stat-card card-shell">
         <div class="stat-label">事件总数</div>
-        <div class="stat-value">{{ emergencies.length }}</div>
+        <div class="stat-value">{{ stats.total }}</div>
       </div>
       <div class="stat-card card-shell">
         <div class="stat-label">待派发</div>
@@ -40,7 +40,7 @@
               :key="item.value"
               class="filter-btn"
               :class="{ active: currentFilter === item.value }"
-              @click="currentFilter = item.value"
+              @click="changeFilter(item.value)"
             >
               {{ item.label }}
             </button>
@@ -49,7 +49,7 @@
 
         <div class="event-list" v-loading="listLoading">
           <div
-            v-for="item in filteredEmergencies"
+            v-for="item in displayedEmergencies"
             :key="item.id"
             class="event-card"
             :class="{ active: selectedEmergency && selectedEmergency.id === item.id }"
@@ -66,9 +66,23 @@
             </div>
           </div>
 
-          <div v-if="!filteredEmergencies.length && !listLoading" class="empty-state">
+          <div v-if="!displayedEmergencies.length && !listLoading" class="empty-state">
             暂无匹配的应急事件
           </div>
+        </div>
+
+        <div class="list-pagination">
+          <el-pagination
+            small
+            background
+            :current-page="currentPage"
+            :page-size="pageSize"
+            :page-sizes="[10, 20, 50, 100]"
+            layout="total, sizes, prev, pager, next"
+            :total="total"
+            @current-change="handlePageChange"
+            @size-change="handlePageSizeChange"
+          />
         </div>
       </div>
 
@@ -302,6 +316,14 @@ export default {
       ],
       currentFilter: 'all',
       emergencies: [],
+      currentPage: 1,
+      pageSize: 20,
+      total: 0,
+      statusTotals: {
+        pending: 0,
+        dispatched: 0,
+        closed: 0
+      },
       selectedEmergency: null,
       deviceOptions: [],
       linkedAlarm: null,
@@ -323,15 +345,18 @@ export default {
     }
   },
   computed: {
-    filteredEmergencies () {
-      if (this.currentFilter === 'all') return this.emergencies
-      return this.emergencies.filter(item => item.rawStatus === this.currentFilter)
+    displayedEmergencies () {
+      return this.emergencies
     },
     stats () {
+      const pending = this.statusTotals.pending
+      const dispatched = this.statusTotals.dispatched
+      const closed = this.statusTotals.closed
       return {
-        pending: this.emergencies.filter(item => item.rawStatus === 'NEW').length,
-        dispatched: this.emergencies.filter(item => item.rawStatus === 'DISPATCHED').length,
-        closed: this.emergencies.filter(item => item.rawStatus === 'CLOSED').length
+        total: pending + dispatched + closed,
+        pending,
+        dispatched,
+        closed
       }
     },
     timelineItems () {
@@ -456,11 +481,29 @@ export default {
       this.listLoading = true
       try {
         const currentId = this.selectedEmergency && this.selectedEmergency.id
-        const res = await getEmergencyList({ page: 1, size: 50 })
+        const status = this.currentFilter === 'all' ? '' : this.currentFilter
+        const [res] = await Promise.all([
+          getEmergencyList({
+            page: this.currentPage,
+            size: this.pageSize,
+            status
+          }),
+          this.fetchEmergencyTotals()
+        ])
         const list = (res.data && res.data.list) || []
         this.emergencies = list.map(item => this.normalizeEmergency(item))
+        this.total = Number((res.data && res.data.total) || 0)
 
-        const next = this.emergencies.find(item => item.id === currentId) || this.filteredEmergencies[0] || this.emergencies[0] || null
+        if (!this.emergencies.length && this.currentPage > 1 && this.total >= 0) {
+          const maxPage = Math.max(1, Math.ceil(this.total / this.pageSize))
+          if (this.currentPage > maxPage) {
+            this.currentPage = maxPage
+            await this.fetchEmergencies()
+            return
+          }
+        }
+
+        const next = this.emergencies.find(item => item.id === currentId) || this.displayedEmergencies[0] || this.emergencies[0] || null
         if (next) {
           await this.selectEmergency(next)
         } else {
@@ -474,6 +517,35 @@ export default {
       } finally {
         this.listLoading = false
       }
+    },
+    async fetchEmergencyTotals () {
+      const [pendingRes, dispatchedRes, closedRes] = await Promise.allSettled([
+        getEmergencyList({ page: 1, size: 1, status: 'NEW' }),
+        getEmergencyList({ page: 1, size: 1, status: 'DISPATCHED' }),
+        getEmergencyList({ page: 1, size: 1, status: 'CLOSED' })
+      ])
+      this.statusTotals = {
+        pending: pendingRes.status === 'fulfilled' ? Number((pendingRes.value.data && pendingRes.value.data.total) || 0) : 0,
+        dispatched: dispatchedRes.status === 'fulfilled' ? Number((dispatchedRes.value.data && dispatchedRes.value.data.total) || 0) : 0,
+        closed: closedRes.status === 'fulfilled' ? Number((closedRes.value.data && closedRes.value.data.total) || 0) : 0
+      }
+    },
+    changeFilter (value) {
+      if (this.currentFilter === value) return
+      this.currentFilter = value
+      this.currentPage = 1
+      this.fetchEmergencies()
+    },
+    handlePageChange (page) {
+      if (page === this.currentPage) return
+      this.currentPage = page
+      this.fetchEmergencies()
+    },
+    handlePageSizeChange (size) {
+      if (size === this.pageSize) return
+      this.pageSize = size
+      this.currentPage = 1
+      this.fetchEmergencies()
     },
     async selectEmergency (item) {
       if (!item || !item.id) return
@@ -756,6 +828,14 @@ export default {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
+}
+
+.list-pagination {
+  padding: 0 12px 12px;
+  display: flex;
+  justify-content: center;
+  border-top: 1px solid #e2e8f0;
+  background: #f5f9ff;
 }
 
 .event-card {

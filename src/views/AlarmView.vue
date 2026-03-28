@@ -15,7 +15,7 @@
             @click="changeFilter(tab.value)"
           >
             {{ tab.label }}
-            <span v-if="tab.value === 'all'" class="count-num">{{ alarms.length }}</span>
+            <span v-if="tab.value === 'all'" class="count-num">{{ total }}</span>
             <span v-if="tab.value === 'pending' && pendingCount > 0" class="red-badge">{{ pendingCount }}</span>
           </button>
         </div>
@@ -23,7 +23,7 @@
 
       <div class="list-container">
         <div
-          v-for="alarm in filteredAlarms"
+          v-for="alarm in displayedAlarms"
           :key="alarm.id"
           class="alarm-card"
           :class="{ active: selectedAlarm && selectedAlarm.id === alarm.id }"
@@ -39,6 +39,20 @@
           <p class="card-desc">{{ alarm.descPreview }}</p>
           <div class="card-time">{{ alarm.time }}</div>
         </div>
+      </div>
+
+      <div class="list-pagination">
+        <el-pagination
+          small
+          background
+          :current-page="currentPage"
+          :page-size="pageSize"
+          :page-sizes="[10, 20, 50]"
+          layout="total, sizes, prev, pager, next"
+          :total="total"
+          @current-change="handlePageChange"
+          @size-change="handlePageSizeChange"
+        />
       </div>
     </div>
 
@@ -300,6 +314,9 @@ export default {
         { label: '已解决', value: 'resolved' }
       ],
       alarms: [],
+      total: 0,
+      currentPage: 1,
+      pageSize: 20,
       selectedAlarm: null,
       pendingCount: 0,
       evidenceLoading: false,
@@ -324,6 +341,11 @@ export default {
       if (!this.routeAlertIds.length) return this.alarms
       const idSet = new Set(this.routeAlertIds)
       return this.alarms.filter(item => idSet.has(Number(item.id)))
+    },
+    displayedAlarms () {
+      if (!this.routeAlertIds.length) return this.filteredAlarms
+      const start = (this.currentPage - 1) * this.pageSize
+      return this.filteredAlarms.slice(start, start + this.pageSize)
     },
     filteredAlarms () {
       if (this.currentFilter === 'all') return this.scopedAlarms
@@ -370,6 +392,14 @@ export default {
       if (raw === 'ACKED' || raw === 'PROCESSING') return 'processing'
       if (raw === 'CLOSED' || raw === 'RESOLVED') return 'resolved'
       return 'pending'
+    },
+    mapFilterToApiStatus (filter) {
+      const value = String(filter || '').toLowerCase()
+      if (!value || value === 'all') return ''
+      if (value === 'pending') return 'NEW'
+      if (value === 'processing') return 'ACKED'
+      if (value === 'resolved') return 'CLOSED'
+      return value.toUpperCase()
     },
     getStatusText (status) {
       return {
@@ -423,6 +453,36 @@ export default {
     },
     changeFilter (value) {
       this.currentFilter = value
+      this.currentPage = 1
+      this.fetchAlarms()
+    },
+    handlePageChange (page) {
+      this.currentPage = page
+      this.fetchAlarms()
+    },
+    handlePageSizeChange (size) {
+      this.pageSize = size
+      this.currentPage = 1
+      this.fetchAlarms()
+    },
+    sortAlarmList (list) {
+      return (Array.isArray(list) ? list.slice() : []).sort((a, b) => {
+        const timeA = new Date(((a && a.raw && (a.raw.occurTime || a.raw.createdAt)) || a.time || '').replace(' ', 'T')).getTime() || 0
+        const timeB = new Date(((b && b.raw && (b.raw.occurTime || b.raw.createdAt)) || b.time || '').replace(' ', 'T')).getTime() || 0
+        return timeB - timeA
+      })
+    },
+    async fetchPendingCount () {
+      if (this.routeAlertIds.length) {
+        this.pendingCount = this.scopedAlarms.filter(item => item.status === 'pending').length
+        return
+      }
+      try {
+        const res = await getAlarmList(1, 1, this.mapFilterToApiStatus('pending'))
+        this.pendingCount = Number((res.data && res.data.total) || 0)
+      } catch (e) {
+        this.pendingCount = 0
+      }
     },
     toAbsoluteApiUrl (path) {
       if (!path) return ''
@@ -482,30 +542,44 @@ export default {
     async fetchAlarms () {
       try {
         const currentId = this.selectedAlarm && this.selectedAlarm.id
-        const res = await getAlarmList(1, 200)
-        const list = (res.data && res.data.list) || []
-        this.alarms = list.map(this.parseAlarmItem)
-        this.pendingCount = this.alarms.filter(item => item.status === 'pending').length
         const routeAlertId = this.getRouteAlertId()
-        if (routeAlertId || this.routeAlertIds.length) {
+        const routeScopedIds = Array.from(new Set([
+          ...this.routeAlertIds,
+          ...(routeAlertId ? [routeAlertId] : [])
+        ]))
+        let alarms = []
+        if (routeScopedIds.length) {
           this.currentFilter = 'all'
+          const detailResults = await Promise.allSettled(routeScopedIds.map(id => getAlarmDetail(id)))
+          detailResults.forEach(result => {
+            if (result.status !== 'fulfilled') return
+            const detailAlarm = result.value && result.value.data ? this.parseAlarmItem(result.value.data) : null
+            if (detailAlarm) alarms.push(detailAlarm)
+          })
+          alarms = this.sortAlarmList(alarms)
+          this.alarms = alarms
+          this.total = this.filteredAlarms.length
+          const maxPage = Math.max(1, Math.ceil(this.total / this.pageSize))
+          if (this.currentPage > maxPage) this.currentPage = maxPage
+          await this.fetchPendingCount()
+        } else {
+          const res = await getAlarmList(this.currentPage, this.pageSize, this.mapFilterToApiStatus(this.currentFilter))
+          const list = (res.data && res.data.list) || []
+          alarms = list.map(this.parseAlarmItem)
+          this.alarms = alarms
+          this.total = Number((res.data && res.data.total) || alarms.length)
+          await this.fetchPendingCount()
         }
         let nextAlarm = routeAlertId
           ? this.alarms.find(item => item.id === routeAlertId)
           : null
 
-        if (!nextAlarm && routeAlertId) {
-          try {
-            const detailRes = await getAlarmDetail(routeAlertId)
-            const detailAlarm = detailRes.data ? this.parseAlarmItem(detailRes.data) : null
-            if (detailAlarm) {
-              this.alarms.unshift(detailAlarm)
-              nextAlarm = detailAlarm
-            }
-          } catch (e) {}
-        }
-
-        nextAlarm = nextAlarm || this.scopedAlarms.find(item => item.id === currentId) || this.filteredAlarms[0] || this.scopedAlarms[0] || this.alarms[0] || null
+        nextAlarm = nextAlarm ||
+          this.displayedAlarms.find(item => item.id === currentId) ||
+          this.displayedAlarms[0] ||
+          this.filteredAlarms[0] ||
+          this.alarms[0] ||
+          null
         if (nextAlarm) {
           await this.selectAlarm(nextAlarm)
         } else {
@@ -717,6 +791,7 @@ export default {
 .list-container { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
 .list-container::-webkit-scrollbar { width: 4px; }
 .list-container::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+.list-pagination { padding: 10px 12px 14px; border-top: 1px solid #e2e8f0; background: #f5f9ff; }
 
 .alarm-card { cursor: pointer; padding: 16px 20px; border-bottom: 1px solid #f5f9ff; border-left: 4px solid transparent; transition: all 0.2s ease; background-color: #f5f9ff; }
 .alarm-card:hover { background: #f8fafc; }
